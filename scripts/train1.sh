@@ -1,12 +1,12 @@
 #!/bin/bash
 # train.sh <ROUND_ID> <ROLE_NAME>
 
-ROUND_ID=$1
-ROLE_NAME=$2
+WORK_DIR=$1
+MODEL_NAME=$2
 shift 2  # 其他参数透传给 train.py
 
-export ROUND_ID
-export ROLE_NAME
+export WORK_DIR
+export MODEL_NAME
 
 MASTER_ADDR=localhost
 MASTER_PORT=12345
@@ -30,7 +30,8 @@ export LAUNCHER="torchrun \
 export CMD="scripts/train.py \
 $CONFIG_FILE \
 --launcher pytorch \
---deepspeed deepspeed_zero2"
+--deepspeed deepspeed_zero2 \
+--work-dir $WORK_DIR"
 
 echo $LAUNCHER
 echo $CMD

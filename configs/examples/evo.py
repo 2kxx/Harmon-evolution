@@ -14,18 +14,13 @@ with read_base():
 #######################################################################
 #                          PART 1  Settings                           #
 #######################################################################
-# 角色名 & 自回归轮次
-role_name = os.getenv("ROLE_NAME", "default")
-round_id = os.getenv("ROUND_ID", "round1")
 
-# 保存路径
-work_dir = f"./checkpoints/{role_name}/{round_id}"
-os.makedirs(work_dir, exist_ok=True)
+model_name = os.getenv("MODEL_NAME", "checkpoints/harmon_1.5b.pth")
 
 # Model
 model.update(
     type=HarmonDev,
-    pretrained_pth='checkpoints/harmon_1.5b.pth',
+    pretrained_pth=model_name,
     freeze_llm=False,
 )
 
@@ -90,8 +85,7 @@ default_hooks = dict(
         type=CheckpointHook,
         by_epoch=False,
         interval=save_steps,
-        max_keep_ckpts=save_total_limit,
-        out_dir=work_dir
+        max_keep_ckpts=save_total_limit
     ),
     sampler_seed=dict(type=DistSamplerSeedHook),
 )
