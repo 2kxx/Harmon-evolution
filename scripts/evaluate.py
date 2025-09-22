@@ -62,6 +62,40 @@ def build_inputs(prompt, image, model, image_token_idx, image_size):
     return input_ids, inputs_embeds
 
 
+def chat_round(model, state, prompt, image, image_token_idx, image_size):
+    """One round of QA with state"""
+    input_ids, inputs_embeds = build_inputs(prompt, image, model, image_token_idx, image_size)
+
+    if state.get("past_ids") is not None:
+        # 拼接历史 input_ids
+        input_ids = torch.cat([state["past_ids"], input_ids], dim=1)
+        inputs_embeds = torch.cat([state["past_inputs_embeds"], inputs_embeds], dim=1)
+
+    print(input_ids.size())
+    print(inputs_embeds.size())
+    with torch.no_grad():
+        output = model.llm.generate(
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
+            past_key_values=state.get("past_key_values", None),
+            use_cache=True,
+            return_dict_in_generate=True,
+            output_hidden_states=True,
+            do_sample=False,
+            max_new_tokens=512,
+            eos_token_id=model.tokenizer.eos_token_id,
+            pad_token_id=model.tokenizer.pad_token_id or model.tokenizer.eos_token_id
+        )
+
+    # 更新 state
+    state["past_key_values"] = output.past_key_values
+    state["past_ids"] = output.sequences[:, :-1]
+    state["past_inputs_embeds"] = output.hidden_states[-1][0]
+
+    ans = model.tokenizer.decode(output.sequences[0, input_ids.size(1):], skip_special_tokens=True)
+    return ans, state
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('config', help='config file path.')
@@ -90,41 +124,15 @@ if __name__ == '__main__':
     image1 = preprocess_image(args.image1, args.image_size, model)
     image2 = preprocess_image(args.image2, args.image_size, model)
 
-    # history text (manually appended)
-    history_text = ""
+    # state 初始化
+    state = {}
 
-    # round 1: ask about image1
+    # round 1
     q1 = "Consistency quality refers to the overall visual coherence of an image, including the seamless integration of all regions in terms of background, lighting, color, and texture. A high consistency quality means the elements do not appear mismatched or disconnected, but instead form a unified and natural whole. Describe the consistency quality of image1."
-    input_ids, inputs_embeds = build_inputs(q1, image1, model, image_token_idx, args.image_size)
-    with torch.no_grad():
-        output = model.llm.generate(
-            inputs_embeds=inputs_embeds,
-            use_cache=True,
-            do_sample=False,
-            max_new_tokens=512,
-            eos_token_id=model.tokenizer.eos_token_id,
-            pad_token_id=model.tokenizer.pad_token_id if model.tokenizer.pad_token_id is not None else model.tokenizer.eos_token_id
-        )
-    ans1 = model.tokenizer.decode(output[0], skip_special_tokens=True)
+    ans1, state = chat_round(model, state, q1, image1, image_token_idx, args.image_size)
     print(f"\nUser: {q1}\nAssistant: {ans1}")
 
-    # keep history for round 2
-    history_text += f"User: {q1}\nAssistant: {ans1}\n"
-
-    # round 2: ask about image2, while comparing with image1
+    # round 2
     q2 = "Describe the consistency quality of image2. Compare it with the previous analysis of image1, assuming both images show the same objects or scene. Answer the question: Is image2 better than image1 in consistency quality? Provide a one-sentence reason followed by 'Yes' or 'No'."
-    # prepend history to the question
-    q2_with_history = history_text + f"{q2}"
-
-    input_ids, inputs_embeds = build_inputs(q2_with_history, image2, model, image_token_idx, args.image_size)
-    with torch.no_grad():
-        output = model.llm.generate(
-            inputs_embeds=inputs_embeds,
-            use_cache=True,
-            do_sample=False,
-            max_new_tokens=512,
-            eos_token_id=model.tokenizer.eos_token_id,
-            pad_token_id=model.tokenizer.pad_token_id if model.tokenizer.pad_token_id is not None else model.tokenizer.eos_token_id
-        )
-    ans2 = model.tokenizer.decode(output[0], skip_special_tokens=True)
+    ans2, state = chat_round(model, state, q2, image2, image_token_idx, args.image_size)
     print(f"\nUser: {q2}\nAssistant: {ans2}")
