@@ -63,50 +63,21 @@ It is recommended to use the following command to download the checkpoints
 huggingface-cli download wusize/harmon  --local-dir checkpoints --repo-type model
 ```
 
-### 🖌️ Image-to-text Generation
+### 🖌️ Image-to-text Generation (evaluate)
 
 ```shell
 export PYTHONPATH=./:$PYTHONPATH
-python scripts/image2text.py configs/models/qwen2_5_1_5b_kl16_mar_h.py \
-         --checkpoint checkpoints/harmon_1.5b.pth  --image_size 512 \
-         --image data/view.jpg --prompt "Describe the image in detail."
+
+python scripts/evaluate.py configs/models/qwen2_5_1_5b_kl16_mar_h.py --checkpoint /hd2/tangzhenchen/model/harmon/Harmon_1.5b_ReAlign.pth  --image_size 512 --image1 output1.jpg --image2 output2.jpg
 ```
 
-### 🖼️ Text-to-image Generation
+### 🖼️ Text-to-image Generation (sample)
 
 You can generate images from text prompts using the following command:
 
 ```shell
 export PYTHONPATH=./:$PYTHONPATH
-python scripts/text2image.py configs/models/qwen2_5_1_5b_kl16_mar_h.py \
-         --checkpoint checkpoints/harmon_1.5b.pth  --image_size 512 \
-         --prompt 'a dog on the left and a cat on the right.'  --output output.jpg
-```
 
-To generate a list of images based on prompts in a json file.
-```shell
-export PYTHONPATH=./:$PYTHONPATH
-accelerate launch scripts/batch_text2image.py configs/models/qwen2_5_1_5b_kl16_mar_h.py \
-       --checkpoint checkpoints/harmon_1.5b.pth  --image_size 512 \
-       --data path/to/xxx.json --output output --batch_size 4 --grid_size 2
-```
-The json file should look like:
-
-```json
-[
-  {
-   "prompt": "a dog on the left and a cat on the right."
-  }
-]
-```
-
-### evaluate
-```shell
-python scripts/evaluate.py configs/models/qwen2_5_1_5b_kl16_mar_h.py --checkpoint /hd2/tangzhenchen/model/harmon/Harmon_1.5b_ReAlign.pth  --image_size 512 --image1 output1.jpg --image2 output2.jpg
-```
-
-### sample
-```shell
 python scripts/sample.py configs/models/qwen2_5_1_5b_kl16_mar_h.py --checkpoint /hd2/tangzhenchen/model/harmon/Harmon_1.5b_ReAlign.pth  --image_size 512 --json prompts.json
 ```
 

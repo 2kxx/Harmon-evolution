@@ -2,10 +2,19 @@ import numpy as np
 import torch
 from PIL import Image
 from mmengine.config import Config
+from transformers import AutoTokenizer, AutoModel
+
 from src.builder import BUILDER
 from einops import rearrange
 import argparse
 
+PROMPT_TEMPLATE = dict(
+    SYSTEM='<|im_start|>system\n{system}<|im_end|>\n',
+    INSTRUCTION='<|im_start|>user\n{input}<|im_end|>\n<|im_start|>assistant\n',
+    SUFFIX='<|im_end|>',
+    SUFFIX_AS_EOS=True,
+    SEP='\n',
+    STOP_WORDS=['<|im_end|>', '<|endoftext|>'])
 
 def expand2square(pil_img, background_color):
     width, height = pil_img.size
@@ -98,27 +107,22 @@ def chat_round(model, state, prompt, image, image_token_idx, image_size):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('config', help='config file path.')
-    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument("--path", type=str, default=None)
     parser.add_argument("--image1", type=str, default="data/view1.jpg")
     parser.add_argument("--image2", type=str, default="data/view2.jpg")
     parser.add_argument("--image_size", type=int, default=512)
     args = parser.parse_args()
 
-    config = Config.fromfile(args.config)
-    model = BUILDER.build(config.model).eval().cuda()
-    model = model.to(model.dtype)
+    tokenizer = AutoTokenizer.from_pretrained(args.path, trust_remote_code=True)
+    model = AutoModel.from_pretrained(args.path, trust_remote_code=True).eval().cuda().bfloat16()
 
-    if args.checkpoint is not None:
-        print(f"Load checkpoint: {args.checkpoint}", flush=True)
-        checkpoint = torch.load(args.checkpoint)
-        _ = model.load_state_dict(checkpoint, strict=False)
+    if "<image>" not in tokenizer.get_vocab():
+        special_tokens_dict = {'additional_special_tokens': ["<image>", ]}
+        num_added_toks = tokenizer.add_special_tokens(special_tokens_dict)
+        assert num_added_toks == 1
 
-    # register <image>
-    special_tokens_dict = {'additional_special_tokens': ["<image>", ]}
-    num_added_toks = model.tokenizer.add_special_tokens(special_tokens_dict)
-    assert num_added_toks == 1
-    image_token_idx = model.tokenizer.encode("<image>", add_special_tokens=False)[-1]
+    image_token_idx = tokenizer.encode("<image>", add_special_tokens=False)[-1]
+    print(f"Image token: {tokenizer.decode(image_token_idx)}")
 
     # preprocess images
     image1 = preprocess_image(args.image1, args.image_size, model)
@@ -133,6 +137,6 @@ if __name__ == '__main__':
     print(f"\nUser: {q1}\nAssistant: {ans1}")
 
     # round 2
-    q2 = "Describe the consistency quality of image2. Compare it with the previous analysis of image1, assuming both images show the same objects or scene. Answer the question: Is image2 better than image1 in consistency quality? Provide a one-sentence reason followed by 'Yes' or 'No'."
+    q2 = "Describe the consistency quality of image2. Compare it with the previous analysis of image1, assuming both images show the same objects or scene. Answer the question: Is image2 better than image1 in consistency quality? Provide 'Yes' or 'No'."
     ans2, state = chat_round(model, state, q2, image2, image_token_idx, args.image_size)
     print(f"\nUser: {q2}\nAssistant: {ans2}")

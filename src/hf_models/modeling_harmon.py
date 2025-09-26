@@ -1,27 +1,28 @@
 import torch
-import torch.nn.functional as F
 import math
 import numpy as np
 import torch.nn as nn
+import copy
 from einops import rearrange
+from torch.nn.modules.module import T
 from transformers.cache_utils import DynamicCache
-from src.builder import BUILDER
+
 from tqdm import tqdm
-from torch.nn.utils.rnn import pad_sequence
+from transformers import Qwen2ForCausalLM, Qwen2Config, PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from torch.autograd.function import Function
 
-IMAGE_TOKEN_INDEX = -200
+from .diffusion_utils import *
+from .gaussian_diffusion import *
+from .respace import *
+from .misc import *
+from .diffloss import *
 
-class _ScaleGradient(Function):
-    @staticmethod
-    def forward(ctx, input, scale):
-        ctx.scale = scale
-        return input
 
-    @staticmethod
-    def backward(ctx, grad_output):
-        return grad_output * ctx.scale, None
+from .configuration_harmon import HarmonConfig
+from .vae import AutoencoderKL
+from .mar import mar_base, mar_large, mar_huge
+
 
 def build_mlp(hidden_size, projector_dim, z_dim):
     return nn.Sequential(
@@ -36,28 +37,45 @@ def mask_by_order(mask_len, order, bsz, seq_len):
                             src=torch.ones(bsz, seq_len, device=order.device)).bool()
     return masking
 
+class _ScaleGradient(Function):
+    @staticmethod
+    def forward(ctx, input, scale):
+        ctx.scale = scale
+        return input
 
-class Harmon(nn.Module):
-    def __init__(self,
-                 vae,
-                 vae_scale,
-                 llm,
-                 mar,
-                 tokenizer,
-                 prompt_template):
-        super().__init__()
+    @staticmethod
+    def backward(ctx, grad_output):
+        return grad_output * ctx.scale, None
+
+class HarmonModel(PreTrainedModel):
+    config_class = HarmonConfig
+
+    def __init__(self, config: HarmonConfig):
+        super().__init__(config)
+        self.grad_scale = 0.1
+        self.IMAGE_TOKEN_INDEX = None
         # VAE
-        self.vae = BUILDER.build(vae)
-        self.vae.requires_grad_(False)
-        self.vae_scale = vae_scale
+        self.vae = AutoencoderKL(
+            embed_dim=16,
+            ch_mult=(1, 1, 2, 2, 4)
+        )
+        self.vae_scale = 0.2325
 
         # LLM
-        self.llm = BUILDER.build(llm)
-        self.tokenizer = BUILDER.build(tokenizer)
-        self.prompt_template = prompt_template
+        self.llm = Qwen2ForCausalLM(config=Qwen2Config.from_dict(config.llm))
 
         # MAR
-        self.mar = BUILDER.build(mar)
+        mar_config = copy.deepcopy(config.mar)
+        mar_type = mar_config.pop('type')
+        if mar_type == 'mar_base':
+            self.mar = mar_base(**mar_config)
+        elif mar_type == 'mar_large':
+            self.mar = mar_large(**mar_config)
+        elif mar_type == 'mar_huge':
+            self.mar = mar_huge(**mar_config)
+        else:
+            raise ValueError
+
         # projection layers
         self.proj_in = build_mlp(hidden_size=self.mar.encoder_embed_dim,
                                  projector_dim=self.llm.config.hidden_size,
@@ -182,23 +200,6 @@ class Harmon(nn.Module):
             values.data = values.data[:, :, :cur_len]
 
     @torch.no_grad()
-    def prepare_text_conditions(self, prompt, cfg_prompt='Generate an image.'):
-        all_prompts = [self.prompt_template['INSTRUCTION'].format(input=prompt),
-                       self.prompt_template['INSTRUCTION'].format(input=cfg_prompt)]
-
-        input_ids = [self.tokenizer.encode(p, add_special_tokens=True, return_tensors='pt')[0]
-                     for p in all_prompts]
-        valid_lens = [len(input_ids_) for input_ids_ in input_ids]
-        input_ids = pad_sequence(input_ids, batch_first=True,
-                                 padding_value=self.tokenizer.eos_token_id)
-        attention_mask = torch.zeros_like(input_ids).bool()
-        for i in range(len(input_ids)):
-            attention_mask[i, :valid_lens[i]] = True
-
-        return dict(input_ids=input_ids.to(self.device),
-                    attention_mask=attention_mask.to(self.device))
-
-    @torch.no_grad()
     def sample(self,
                input_ids=None, inputs_embeds=None,
                attention_mask=None, num_iter=64, cfg=1.0, cfg_schedule="constant", temperature=1.0,
@@ -303,8 +304,8 @@ class Harmon(nn.Module):
             input_ids=None,
             attention_mask=None,
             pixel_values=None,
-            image_grid_thw=None,
             labels=None,
+            image_grid_thw=None,
             task="image2text",  # "text2image" or "image2text"
             return_dict=True,
     ):
@@ -346,7 +347,7 @@ class Harmon(nn.Module):
 
                 text_embeds = self.llm.get_input_embeddings()(input_ids)
                 inputs_embeds = text_embeds.clone()
-                inputs_embeds[input_ids == IMAGE_TOKEN_INDEX] = z_enc.view(-1, z_enc.size(-1))
+                inputs_embeds[input_ids == self.IMAGE_TOKEN_INDEX] = z_enc.view(-1, z_enc.size(-1))
                 loss_null = 0.0
 
             output = self.llm_model(
@@ -355,7 +356,8 @@ class Harmon(nn.Module):
                 return_dict=True
             )
 
-            logits = output.logits  # [B, T, Vocab]
+            last_hidden_state = output.last_hidden_state
+            logits = self.llm.get_output_embeddings()(last_hidden_state)
 
             if labels is not None:
                 shift_logits = logits[..., :-1, :].contiguous()
@@ -376,4 +378,40 @@ class Harmon(nn.Module):
             logits=logits,
             hidden_states=None,
             attentions=None,
+        )
+
+    def generate(
+            self,
+            input_ids=None,
+            attention_mask=None,
+            pixel_values=None,
+            image_grid_thw=None,
+            generation_config=None,
+            **kwargs
+    ):
+        """
+        Harmon 的 generate 接口，封装视觉处理后调用 self.llm.generate。
+        """
+        if pixel_values is None:
+            inputs_embeds = self.llm.get_input_embeddings()(input_ids)
+        else:
+            x = pixel_values.to(dtype=self.dtype, device=self.device)
+            x = self.encode(x)  # b m n c
+            _, z_enc = self.extract_visual_feature(x)
+
+            if self.grad_scale is not None:
+                z_enc = _ScaleGradient.apply(z_enc, self.grad_scale)
+
+            text_embeds = self.llm.get_input_embeddings()(input_ids)
+            inputs_embeds = text_embeds.clone()
+            inputs_embeds[input_ids == self.IMAGE_TOKEN_INDEX] = z_enc.view(-1, z_enc.size(-1))
+
+        # 调用 LLM 的 generate
+        return self.llm.generate(
+            input_ids=input_ids,
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            generation_config=generation_config,
+            return_dict_in_generate=True,
+            **kwargs
         )

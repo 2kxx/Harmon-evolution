@@ -3,9 +3,9 @@ import requests
 from bs4 import BeautifulSoup
 import shutil
 
-baseurl = "https://hf-mirror.com/sanaka87/Harmon-1.5B-RecA/resolve/main/"
-tree_url = "https://hf-mirror.com/sanaka87/Harmon-1.5B-RecA/tree/main"
-dataset_path = "/hd2/tangzhenchen/model/harmon"
+baseurl = "https://hf-mirror.com/wusize/Harmon-1_5B/resolve/main/"
+tree_url = "https://hf-mirror.com/wusize/Harmon-1_5B/tree/main"
+dataset_path = "/hd2/tangzhenchen/model/harmon/harmon"
 
 # 创建本地目录
 os.makedirs(dataset_path, exist_ok=True)
@@ -21,7 +21,7 @@ for link in soup.find_all('a'):
     href = link.get('href')
     if href and '/resolve/main/' in href:
         filename = href.split('/resolve/main/')[-1].split('?')[0]
-        if filename.startswith("Harmon_1.5b"):
+        if filename.startswith("model-"):
             file_list.append(filename)
 
 print(f"[i] 共找到 {len(file_list)} 个符合条件的文件")

@@ -1,0 +1,2 @@
+datasets:
+    - json_path: /hd2/tangzhenchen/project/VLM-R1/src/open-r1-multimodal/data.json

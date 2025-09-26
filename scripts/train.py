@@ -348,7 +348,6 @@ def main():
 
         # start training
         runner.train()
-        runner.save_checkpoint(f'{args.work_dir}/harmon_1.5b.pth')
 
 
 if __name__ == '__main__':
